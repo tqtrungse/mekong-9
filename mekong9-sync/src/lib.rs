@@ -19,5 +19,7 @@
 
 mod internal;
 mod mutex;
+mod wait_group;
 
 pub use mutex::{Mutex, MutexGuard, MutexGuardFair};
+pub use wait_group::WaitGroup;
