@@ -1,0 +1,10 @@
+[package]
+name = "mekong9-hash"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mekong9-utils = { path = "../mekong9-utils", version = "0.1.0" }
+
+[dev-dependencies]
+base64 = "0.22.1"
