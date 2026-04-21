@@ -1,0 +1,20 @@
+[package]
+name = "mekong9-parker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cfg-if = "1.0.4"
+mekong9-utils = { path = "../mekong9-utils", version = "0.1.0" }
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_System_WindowsProgramming",
+]
+
+[target.'cfg(not(windwos))'.dependencies]
+libc = "0.2.180"
