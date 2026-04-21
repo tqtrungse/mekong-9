@@ -36,59 +36,6 @@ const TIMEOUT_BIT: u64 = 4;
 const QUEUE_MASK: u64 = !7;
 const TOKEN_HANDOFF: UnparkToken = UnparkToken(TIMEOUT_BIT as usize);
 
-macro_rules! park {
-    ($self: expr, $state: expr) => {
-        with_thread_data(|thread_data| {
-            // We typically use thread-local storage and reuses it through multiple lock() calls.
-            //
-            // So we have to reset to original data: reset unpark_token, prev pointer and
-            // queue_tail pointer.
-            thread_data.unpark_token.set(UnparkToken(0));
-
-            // Add our thread to the front of the queue
-            let queue_head = $state.queue_head();
-            if queue_head.is_null() {
-                thread_data.queue_tail.set(thread_data);
-                thread_data.prev.set(ptr::null());
-            } else {
-                thread_data.queue_tail.set(ptr::null());
-                thread_data.prev.set(ptr::null());
-                thread_data.next.set(queue_head);
-            }
-            if let Err(new_state) = $self.state.compare_exchange_weak(
-                $state,
-                $state.set_queue_head(thread_data),
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                $state = new_state;
-                return ParkResult::Invalid;
-            }
-
-            // Sleep until we are woken up by an unlock
-            // Ignoring unused unsafe, since it's only a few platforms where this is unsafe.
-            thread_data.parker.park();
-            return ParkResult::Unparked(thread_data.unpark_token.get());
-        })
-    };
-}
-
-macro_rules! link_prev_nodes {
-    ($queue_tail: expr, $current: expr) => {
-        loop {
-            $queue_tail = unsafe { (*$current).queue_tail.get() };
-            if !$queue_tail.is_null() {
-                break;
-            }
-            unsafe {
-                let next = (*$current).next.get();
-                (*next).prev.set($current);
-                $current = next;
-            }
-        }
-    };
-}
-
 trait LockState {
     fn is_queue_locked(self) -> bool;
     fn queue_head(self) -> *const ThreadData;
@@ -165,6 +112,59 @@ impl ThreadData {
             next: Cell::new(ptr::null()),
         }
     }
+}
+
+macro_rules! park {
+    ($self: expr, $state: expr) => {
+        with_thread_data(|thread_data| {
+            // We typically use thread-local storage and reuses it through multiple lock() calls.
+            //
+            // So we have to reset to original data: reset unpark_token, prev pointer and
+            // queue_tail pointer.
+            thread_data.unpark_token.set(UnparkToken(0));
+
+            // Add our thread to the front of the queue
+            let queue_head = $state.queue_head();
+            if queue_head.is_null() {
+                thread_data.queue_tail.set(thread_data);
+                thread_data.prev.set(ptr::null());
+            } else {
+                thread_data.queue_tail.set(ptr::null());
+                thread_data.prev.set(ptr::null());
+                thread_data.next.set(queue_head);
+            }
+            if let Err(new_state) = $self.state.compare_exchange_weak(
+                $state,
+                $state.set_queue_head(thread_data),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                $state = new_state;
+                return ParkResult::Invalid;
+            }
+
+            // Sleep until we are woken up by an unlock
+            // Ignoring unused unsafe, since it's only a few platforms where this is unsafe.
+            thread_data.parker.park();
+            return ParkResult::Unparked(thread_data.unpark_token.get());
+        })
+    };
+}
+
+macro_rules! link_prev_nodes {
+    ($queue_tail: expr, $current: expr) => {
+        loop {
+            $queue_tail = unsafe { (*$current).queue_tail.get() };
+            if !$queue_tail.is_null() {
+                break;
+            }
+            unsafe {
+                let next = (*$current).next.get();
+                (*next).prev.set($current);
+                $current = next;
+            }
+        }
+    };
 }
 
 pub struct RawMutex {
@@ -460,6 +460,29 @@ impl RawMutex {
 
 const QUEUE_CLEAR_BIT: u64 = 1;
 
+macro_rules! try_lock_queue {
+    ($state: expr, $self: expr) => {
+        loop {
+            if $state.is_queue_locked()
+                || $state & QUEUE_CLEAR_BIT != 0
+                || $state.queue_head().is_null()
+            {
+                return;
+            }
+
+            match $self.state.compare_exchange_weak(
+                $state,
+                $state | QUEUE_LOCKED_BIT,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(new_state) => $state = new_state,
+            }
+        }
+    };
+}
+
 pub struct ParkingQueue {
     state: AtomicU64,
 }
@@ -537,6 +560,9 @@ impl ParkingQueue {
                 continue;
             }
 
+            // Set clear queue bit and cut the current list.
+            // In other words, if compare_exchange_weak is success, we have QUEUE_CLEAR_BIT
+            // and null head.
             match self.state.compare_exchange_weak(
                 state,
                 QUEUE_CLEAR_BIT,
@@ -562,30 +588,26 @@ impl ParkingQueue {
                 }
                 queue_head = new_head;
             }
+
+            // Cut the current list if other threads push into the queue.
             state = self.state.load(Ordering::Relaxed);
+            loop {
+                match self.state.compare_exchange_weak(
+                    state,
+                    QUEUE_CLEAR_BIT,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(new_state) => state = new_state,
+                }
+            }
         }
     }
 
     fn abort_self(&self, thread_data: *const ThreadData) {
         let mut state = self.state.load(Ordering::Relaxed);
-        loop {
-            if state.is_queue_locked()
-                || state & QUEUE_CLEAR_BIT != 0
-                || state.queue_head().is_null()
-            {
-                return;
-            }
-
-            match self.state.compare_exchange_weak(
-                state,
-                state | QUEUE_LOCKED_BIT,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(new_state) => state = new_state,
-            }
-        }
+        try_lock_queue!(state, self);
 
         'outer: loop {
             let mut curr = state.queue_head();
