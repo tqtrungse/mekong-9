@@ -1,0 +1,4 @@
+[workspace]
+members = [
+    "mekong9-utils",
+]
