@@ -1,5 +1,7 @@
 [workspace]
 members = [
     "mekong9-hash",
+    "mekong9-sync",
+    "mekong9-parker",
     "mekong9-utils",
 ]
