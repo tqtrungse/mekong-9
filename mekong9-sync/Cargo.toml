@@ -1,0 +1,25 @@
+[package]
+name = "mekong9-sync"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cfg-if = "1.0.4"
+smallvec = "1.15.1"
+# Support for allocators that use allocator-api2
+allocator-api2 = { version = "0.2.9", optional = true, default-features = false, features = [
+    "alloc",
+] }
+mekong9-utils = { path = "../mekong9-utils", version = "0.1.0" }
+mekong9-parker = { path = "../mekong9-parker", version = "0.1.0" }
+mekong9-hash = { path = "../mekong9-hash", version = "0.1.0" }
+
+[features]
+default = [
+    "allocator-api2",
+    "default-hasher",
+    "inline-more",
+]
+inline-more = []
+default-hasher = []
+tsan_enabled = []
