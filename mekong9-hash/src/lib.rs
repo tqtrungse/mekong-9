@@ -19,3 +19,5 @@
 
 mod hash;
 mod internal;
+
+pub use hash::{MixingHasher};
