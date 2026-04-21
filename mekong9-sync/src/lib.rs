@@ -18,4 +18,6 @@
  */
 
 mod internal;
+mod mutex;
 
+pub use mutex::{Mutex, MutexGuard, MutexGuardFair};
